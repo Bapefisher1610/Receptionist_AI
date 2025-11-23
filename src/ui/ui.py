@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import time
 from datetime import datetime
+from collections import deque
 
 from ..core.config import UI_WINDOW_NAME, UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT, get_greeting
 from ..utils.utils import draw_text_with_background, resize_image
@@ -24,12 +25,16 @@ class UI:
         self.registration_name = ""
         self.registration_info = ""
         
+        # Log display
+        self.log_messages = deque(maxlen=10)  # Chỉ giữ 10 dòng log gần nhất
+        self.log_area_height = 200  # Chiều cao vùng log
+        
     
     def update_frame(self, frame):
         """Update the current frame"""
         if frame is not None:
             # Resize frame to fit window
-            self.frame = resize_image(frame, width=self.width)
+            self.frame = resize_image(frame.copy(), width=self.width)
     
     def update_recognition_results(self, face_results, voice_result=None):
         """Update recognition results"""
@@ -67,19 +72,21 @@ class UI:
             name = result['name']
             confidence = result['confidence']
             top, right, bottom, left = result['location']
-            
+
             # Draw a box around the face
             cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
-            
-            # Draw name and confidence
-            text = f"{name} ({confidence:.2f})"
-            draw_text_with_background(display_frame, text, (left, bottom + 20))
-            
-            # If known person, display greeting (only once per person)
-            if name != "Unknown" and confidence >= 0.6 and name not in self.greeted_people:
-                greeting = get_greeting('welcome', name)
-                self.add_message(greeting)
-                self.greeted_people.add(name)  # Mark this person as greeted
+
+            # Draw name label above the bounding box (clear, non-occluded)
+            label_text = f"{name}"
+            approx_text_h = int(0.7 * 30)
+            label_y = top - (approx_text_h + 8)
+            if label_y <= 0:
+                label_y = bottom + 8
+            label_x = left
+            draw_text_with_background(display_frame, label_text, (label_x, label_y))
+
+            # Greeting is now handled in main logic to ensure consistency
+            # UI only displays recognition results without duplicate greetings
         
         # Draw messages
         self._draw_messages(display_frame)
@@ -87,6 +94,9 @@ class UI:
         # Draw registration dialog if active
         if self.show_registration_dialog:
             self._draw_registration_dialog(display_frame)
+        
+        # Draw log area
+        self._draw_log_area(display_frame)
         
         # Draw current time
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -198,6 +208,82 @@ class UI:
         draw_text_with_background(frame, instruction, 
                                 (dialog_x + 20, dialog_y + 160), 
                                 bg_color=(255, 255, 255), text_color=(100, 100, 100))
+    
+    def add_log_message(self, message):
+        """Add a log message to display"""
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_msg = f"[{timestamp}] {message}"
+        self.log_messages.append(formatted_msg)
+    
+    def _draw_log_area(self, frame):
+        """Draw log area at bottom of frame"""
+        from PIL import Image, ImageDraw, ImageFont
+        import numpy as np
+        
+        height, width = frame.shape[:2]
+        
+        # Draw semi-transparent black background for log area
+        log_y_start = height - self.log_area_height
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, log_y_start), (width, height), (0, 0, 0), -1)
+        # Alpha blend: 0.7 = 70% transparent
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        
+        # Draw border
+        cv2.rectangle(frame, (0, log_y_start), (width, height), (100, 100, 100), 2)
+        
+        # Draw title using cv2 (English only)
+        cv2.putText(frame, "SYSTEM LOG", (10, log_y_start + 25), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        # Convert to PIL Image for Vietnamese text
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(frame_pil)
+        
+        # Try to load a font that supports Vietnamese
+        try:
+            # Windows fonts
+            font = ImageFont.truetype("arial.ttf", 14)
+        except:
+            try:
+                # Linux fonts
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+            except:
+                # Fallback to default
+                font = ImageFont.load_default()
+        
+        # Draw log messages
+        y_offset = log_y_start + 50
+        line_height = 20
+        
+        for i, log_msg in enumerate(self.log_messages):
+            if y_offset + line_height > height - 10:
+                break
+            
+            # Color based on log level (RGB for PIL)
+            color = (255, 255, 255)  # White default
+            if "ERROR" in log_msg or "❌" in log_msg:
+                color = (255, 0, 0)  # Red
+            elif "WARNING" in log_msg or "⚠️" in log_msg:
+                color = (255, 255, 0)  # Yellow
+            elif "INFO" in log_msg or "✅" in log_msg or "📝" in log_msg or "🎤" in log_msg or "🤖" in log_msg:
+                color = (0, 255, 0)  # Green
+            elif "DEBUG" in log_msg:
+                color = (255, 0, 255)  # Magenta
+            elif "🚀" in log_msg or "🔄" in log_msg:
+                color = (255, 165, 0)  # Orange
+            
+            # Truncate long messages
+            if len(log_msg) > 100:
+                log_msg = log_msg[:97] + "..."
+            
+            # Draw text with PIL (supports Vietnamese)
+            draw.text((10, y_offset), log_msg, font=font, fill=color)
+            y_offset += line_height
+        
+        # Convert back to OpenCV format
+        frame_cv = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+        frame[:] = frame_cv
     
     def close(self):
         """Close the UI window"""

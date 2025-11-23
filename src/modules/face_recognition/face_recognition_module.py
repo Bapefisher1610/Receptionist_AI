@@ -7,7 +7,12 @@ import pickle
 import time
 from datetime import datetime
 
-from ...core.config import FACES_DIR, FACE_RECOGNITION_TOLERANCE, FACE_RECOGNITION_MODEL
+from ...core.config import (
+    FACES_DIR, FACE_RECOGNITION_TOLERANCE, FACE_RECOGNITION_MODEL, 
+    FACE_MATCH_MARGIN, STRICT_FOLDER_EXISTENCE, MIN_FACE_DISTANCE, 
+    MIN_CONFIDENCE_THRESHOLD, MIN_FACE_SIZE, FACE_DETECTION_UPSAMPLE,
+    ENABLE_PREPROCESSING
+)
 from ...utils.utils import load_image_from_path, resize_image
 
 class FaceRecognitionModule:
@@ -108,8 +113,13 @@ class FaceRecognitionModule:
         if face_image is None:
             return False
 
+        # Ensure RGB color for encoding
+        try:
+            face_rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+        except Exception:
+            face_rgb = face_image
         # Get face encoding
-        face_encodings = face_recognition.face_encodings(face_image)
+        face_encodings = face_recognition.face_encodings(face_rgb)
 
         if not face_encodings:
             return False
@@ -132,7 +142,10 @@ class FaceRecognitionModule:
         image_path = person_dir / f"{timestamp}.jpg"
         
         # Convert RGB to BGR for OpenCV
-        cv2.imwrite(str(image_path), cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR))
+        try:
+            cv2.imwrite(str(image_path), cv2.cvtColor(face_rgb, cv2.COLOR_RGB2BGR))
+        except Exception:
+            cv2.imwrite(str(image_path), face_image)
         
         # Update encodings file
         self._save_encodings()
@@ -175,6 +188,115 @@ class FaceRecognitionModule:
             print(f"Error capturing face from frame: {e}")
             return None
     
+    def _calculate_face_center(self, location):
+        """Tính tọa độ trung tâm của khuôn mặt"""
+        top, right, bottom, left = location
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        return (center_x, center_y)
+    
+    def _calculate_distance(self, point1, point2):
+        """Tính khoảng cách Euclidean giữa 2 điểm"""
+        return np.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
+    
+    def _remove_duplicate_faces(self, results):
+        """Loại bỏ các khuôn mặt trùng lặp (cùng 1 người được nhận diện nhiều lần)"""
+        if len(results) <= 1:
+            return results
+        
+        # Nhóm các khuôn mặt theo person_id
+        person_groups = {}
+        for result in results:
+            person_id = result['person_id']
+            if person_id not in person_groups:
+                person_groups[person_id] = []
+            person_groups[person_id].append(result)
+        
+        # Với mỗi person_id, chỉ giữ lại khuôn mặt có confidence cao nhất
+        filtered_results = []
+        for person_id, faces in person_groups.items():
+            if person_id == "unknown":
+                # Với unknown, kiểm tra khoảng cách giữa các khuôn mặt
+                # Chỉ giữ những khuôn mặt cách xa nhau
+                unique_unknowns = []
+                for face in faces:
+                    face_center = self._calculate_face_center(face['location'])
+                    is_duplicate = False
+                    
+                    for existing_face in unique_unknowns:
+                        existing_center = self._calculate_face_center(existing_face['location'])
+                        distance = self._calculate_distance(face_center, existing_center)
+                        
+                        if distance < MIN_FACE_DISTANCE:
+                            # Đây là duplicate, giữ cái có confidence cao hơn
+                            is_duplicate = True
+                            if face['confidence'] > existing_face['confidence']:
+                                unique_unknowns.remove(existing_face)
+                                unique_unknowns.append(face)
+                            break
+                    
+                    if not is_duplicate:
+                        unique_unknowns.append(face)
+                
+                filtered_results.extend(unique_unknowns)
+            else:
+                # Với người đã biết, chỉ giữ khuôn mặt có confidence cao nhất
+                best_face = max(faces, key=lambda x: x['confidence'])
+                filtered_results.append(best_face)
+        
+        return filtered_results
+    
+    def _preprocess_frame(self, frame):
+        """Tiền xử lý frame để cải thiện nhận diện trong điều kiện ánh sáng kém"""
+        try:
+            # Chuyển sang grayscale để kiểm tra độ sáng
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # Tính độ sáng trung bình
+            brightness = np.mean(gray)
+            
+            # Nếu quá tối hoặc quá sáng, điều chỉnh
+            if brightness < 80:  # Quá tối
+                # Tăng độ sáng
+                frame = cv2.convertScaleAbs(frame, alpha=1.3, beta=30)
+            elif brightness > 180:  # Quá sáng
+                # Giảm độ sáng
+                frame = cv2.convertScaleAbs(frame, alpha=0.8, beta=-20)
+            
+            # Áp dụng histogram equalization để cân bằng ánh sáng
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            l = clahe.apply(l)
+            frame = cv2.merge([l, a, b])
+            frame = cv2.cvtColor(frame, cv2.COLOR_LAB2BGR)
+            
+            # Giảm nhiễu
+            frame = cv2.fastNlMeansDenoisingColored(frame, None, 10, 10, 7, 21)
+            
+            return frame
+        except Exception as e:
+            print(f"Lỗi tiền xử lý frame: {e}")
+            return frame
+    
+    def _is_valid_face(self, location):
+        """Kiểm tra xem khuôn mặt có hợp lệ không (đủ lớn, không bị cắt)"""
+        top, right, bottom, left = location
+        
+        # Kiểm tra kích thước
+        width = right - left
+        height = bottom - top
+        
+        if width < MIN_FACE_SIZE or height < MIN_FACE_SIZE:
+            return False
+        
+        # Kiểm tra tỷ lệ (khuôn mặt thường có tỷ lệ gần 1:1)
+        ratio = width / height if height > 0 else 0
+        if ratio < 0.6 or ratio > 1.4:
+            return False
+        
+        return True
+    
     def recognize_faces(self, frame):
         """Recognize faces in a frame and return results"""
         # If no known faces, return empty results
@@ -195,24 +317,36 @@ class FaceRecognitionModule:
         
         # Loop through each face found in the frame
         for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-            # See if the face is a match for the known faces
-            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, 
-                                                   tolerance=FACE_RECOGNITION_TOLERANCE)
-            
             name = "Unknown"
             person_id = "unknown"
             confidence = 0.0
-            
-            # If we found a match
-            if True in matches:
-                # Find the indexes of all matched faces then compute distances
-                face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-                best_match_index = np.argmin(face_distances)
+
+            # Compute distances to all known encodings
+            if len(self.known_face_encodings) > 0:
+                distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                best_idx = int(np.argmin(distances))
+                best_dist = float(distances[best_idx])
+                candidate_id = self.known_face_ids[best_idx]
+                candidate_dir_ok = True
+                if STRICT_FOLDER_EXISTENCE:
+                    candidate_dir_ok = (FACES_DIR / candidate_id).exists()
                 
-                if matches[best_match_index]:
-                    confidence = 1.0 - face_distances[best_match_index]
-                    name = self.known_face_names[best_match_index]
-                    person_id = self.known_face_ids[best_match_index]
+                # Tính confidence trước
+                temp_confidence = max(0.0, 1.0 - best_dist)
+                
+                # Decision: chỉ chấp nhận nếu:
+                # 1. Candidate tồn tại trong folder
+                # 2. Distance trong tolerance
+                # 3. Confidence đủ cao (>= MIN_CONFIDENCE_THRESHOLD)
+                if candidate_dir_ok and best_dist <= FACE_RECOGNITION_TOLERANCE and temp_confidence >= MIN_CONFIDENCE_THRESHOLD:
+                    confidence = temp_confidence
+                    name = self.known_face_names[best_idx]
+                    person_id = candidate_id
+                else:
+                    # Không đạt ngưỡng - đánh dấu là Unknown
+                    name = "Unknown"
+                    person_id = "unknown"
+                    confidence = 0.0
             
             # Scale back coordinates to original frame size
             top *= 2
@@ -232,11 +366,110 @@ class FaceRecognitionModule:
             if name != "Unknown" and confidence >= 0.5:
                 self.logger.log_recognition(person_id, name, "face", confidence)
         
+        # Loại bỏ các khuôn mặt trùng lặp
+        results = self._remove_duplicate_faces(results)
+        
         return results
     
     def detect_faces(self, frame):
         """Detect and recognize faces in frame, return list of detected faces"""
         return self.recognize_faces(frame)
+    
+    def detect_faces_with_encodings(self, frame):
+        """Detect faces và trả về cả face data và encodings"""
+        try:
+            # Tiền xử lý frame (nếu được bật)
+            if ENABLE_PREPROCESSING:
+                processed_frame = self._preprocess_frame(frame)
+            else:
+                processed_frame = frame
+            
+            # Resize frame
+            small_frame = cv2.resize(processed_frame, (0, 0), fx=0.5, fy=0.5)
+            rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            
+            # Detect faces
+            face_locations = face_recognition.face_locations(
+                rgb_frame,
+                model=FACE_RECOGNITION_MODEL,
+                number_of_times_to_upsample=FACE_DETECTION_UPSAMPLE
+            )
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            
+            results = []
+            
+            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+                # Scale back
+                top *= 2
+                right *= 2
+                bottom *= 2
+                left *= 2
+                
+                # Validate
+                if not self._is_valid_face((top, right, bottom, left)):
+                    continue
+                
+                name = "Unknown"
+                person_id = "unknown"
+                confidence = 0.0
+                
+                # Match với known faces
+                if len(self.known_face_encodings) > 0:
+                    distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                    best_idx = int(np.argmin(distances))
+                    best_dist = float(distances[best_idx])
+                    candidate_id = self.known_face_ids[best_idx]
+                    candidate_dir_ok = True
+                    
+                    if STRICT_FOLDER_EXISTENCE:
+                        candidate_dir_ok = (FACES_DIR / candidate_id).exists()
+                    
+                    temp_confidence = max(0.0, 1.0 - best_dist)
+                    
+                    # Debug logging
+                    print(f"[DEBUG] Matching: {self.known_face_names[best_idx]} - Distance: {best_dist:.3f}, Confidence: {temp_confidence:.3f}")
+                    print(f"[DEBUG] Thresholds: Tolerance={FACE_RECOGNITION_TOLERANCE}, Min_Confidence={MIN_CONFIDENCE_THRESHOLD}")
+                    
+                    if candidate_dir_ok and best_dist <= FACE_RECOGNITION_TOLERANCE and temp_confidence >= MIN_CONFIDENCE_THRESHOLD:
+                        confidence = temp_confidence
+                        name = self.known_face_names[best_idx]
+                        person_id = candidate_id
+                        print(f"[DEBUG] ✅ MATCHED: {name} (distance: {best_dist:.3f}, confidence: {confidence:.3f})")
+                    else:
+                        print(f"[DEBUG] ❌ NOT MATCHED: distance={best_dist:.3f} > {FACE_RECOGNITION_TOLERANCE} OR confidence={temp_confidence:.3f} < {MIN_CONFIDENCE_THRESHOLD}")
+                
+                # Tạo face data
+                face_data = {
+                    'name': name,
+                    'person_id': person_id,
+                    'confidence': confidence,
+                    'location': (top, right, bottom, left)
+                }
+                
+                # Log nếu là known
+                if name != "Unknown" and confidence >= 0.5:
+                    self.logger.log_recognition(person_id, name, "face", confidence)
+                
+                results.append({
+                    'face_data': face_data,
+                    'encoding': face_encoding
+                })
+            
+            # Remove duplicates
+            face_data_list = [r['face_data'] for r in results]
+            filtered_face_data = self._remove_duplicate_faces(face_data_list)
+            
+            # Lọc results để chỉ giữ những face không bị duplicate
+            filtered_results = []
+            for r in results:
+                if r['face_data'] in filtered_face_data:
+                    filtered_results.append(r)
+            
+            return filtered_results
+            
+        except Exception as e:
+            print(f"Error in detect_faces_with_encodings: {e}")
+            return []
     
     def recognize_face(self, face_location):
         """Recognize a single face from face location data"""

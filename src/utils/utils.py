@@ -29,41 +29,11 @@ def time_difference_in_seconds(time1, time2):
 
 def resize_image(image, width=None, height=None):
     """Resize image while maintaining aspect ratio"""
-    if width is None and height is None:
-        return image
-
-def load_face_encodings():
-    """Load face encodings from pickle file"""
-    encodings_file = FACES_DIR / 'encodings.pkl'
-    
-    if encodings_file.exists():
-        try:
-            with open(encodings_file, 'rb') as f:
-                return pickle.load(f)
-        except Exception as e:
-            print(f"Error loading face encodings: {e}")
-            return {}
-    else:
-        print(f"Face encodings file not found: {encodings_file}")
-        return {}
-
-def load_voice_patterns():
-    """Load voice patterns from pickle file"""
-    patterns_file = VOICES_DIR / 'patterns.pkl'
-    
-    if patterns_file.exists():
-        try:
-            with open(patterns_file, 'rb') as f:
-                return pickle.load(f)
-        except Exception as e:
-            print(f"Error loading voice patterns: {e}")
-            return {}
-    else:
-        print(f"Voice patterns file not found: {patterns_file}")
-        return {}
-    
+    if image is None:
+        return None
     h, w = image.shape[:2]
-    
+    if width is None and height is None:
+        return image.copy()
     if width is None:
         aspect_ratio = height / float(h)
         dim = (int(w * aspect_ratio), height)
@@ -72,8 +42,9 @@ def load_voice_patterns():
         dim = (width, int(h * aspect_ratio))
     else:
         dim = (width, height)
-        
     return cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
+
+    
 
 def create_log_file_path(log_type):
     """Create a log file path based on the current date and log type"""

@@ -7,7 +7,14 @@ import threading
 import queue
 from pathlib import Path
 
-from ...core.config import VOICES_DIR, VOICE_CONFIDENCE_THRESHOLD
+from ...core.config import (
+    VOICES_DIR,
+    VOICE_CONFIDENCE_THRESHOLD,
+    VOICE_ENERGY_THRESHOLD,
+    VOICE_PAUSE_THRESHOLD,
+    VOICE_PHRASE_TIME_LIMIT,
+    VOICE_TIMEOUT,
+)
 from ...utils.utils import get_timestamp
 
 class VoiceRecognitionModule:
@@ -20,9 +27,13 @@ class VoiceRecognitionModule:
         self.audio_queue = queue.Queue()
         self.listen_thread = None
         
-        # Adjust for ambient noise
+        # Configure recognizer for better latency & noise handling
+        self.recognizer.energy_threshold = VOICE_ENERGY_THRESHOLD
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.pause_threshold = VOICE_PAUSE_THRESHOLD
+        self.recognizer.non_speaking_duration = VOICE_PAUSE_THRESHOLD
         with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source)
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
         
         # Voice recognition is not as straightforward as face recognition
         # For simplicity, we'll use speech-to-text and keyword matching
@@ -148,7 +159,11 @@ class VoiceRecognitionModule:
         while self.is_listening:
             try:
                 with self.microphone as source:
-                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                    audio = self.recognizer.listen(
+                        source,
+                        timeout=VOICE_TIMEOUT,
+                        phrase_time_limit=VOICE_PHRASE_TIME_LIMIT,
+                    )
                     self.audio_queue.put(audio)
             except sr.WaitTimeoutError:
                 # No speech detected, continue listening
@@ -225,38 +240,44 @@ class VoiceRecognitionModule:
         """Calculate confidence score for matching text against keywords"""
         if not text or not keywords:
             return 0
-    
-    def listen_for_command(self, timeout=1):
+        t = text.lower()
+        matches = sum(1 for k in keywords if k and k.lower() in t)
+        if matches > 0:
+            return min(1.0, matches / max(1, len([k for k in keywords if k])))
+        return 0
+
+    def listen_for_command(self, timeout=None, phrase_time_limit=None, calibrate_duration=0.3):
         """Listen for voice command and return recognized text"""
         try:
+            to = VOICE_TIMEOUT if timeout is None else timeout
+            ptl = VOICE_PHRASE_TIME_LIMIT if phrase_time_limit is None else phrase_time_limit
+            print(f"[VOICE] Listening for command (timeout: {to}s, limit: {ptl}s)...")
             with self.microphone as source:
-                # Listen for audio with timeout
-                audio = self.recognizer.listen(source, timeout=timeout, phrase_time_limit=3)
-                
+                self.recognizer.adjust_for_ambient_noise(source, duration=calibrate_duration)
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=to,
+                    phrase_time_limit=ptl,
+                )
+
+            print("[VOICE] Audio captured, recognizing...")
             # Recognize speech
             try:
                 text = self.recognizer.recognize_google(audio, language='vi-VN')
+                print(f"[VOICE] Recognized: '{text}'")
                 return text.lower()
             except sr.UnknownValueError:
+                print("[VOICE] Speech was unintelligible")
                 return None
             except sr.RequestError as e:
+                print(f"[VOICE] Recognition service error: {e}")
                 self.logger.error(f"Voice recognition service error: {e}")
                 return None
-                
+
         except sr.WaitTimeoutError:
+            print("[VOICE] No speech detected within timeout")
             return None
         except Exception as e:
+            print(f"[VOICE] Voice command error: {e}")
             self.logger.error(f"Voice command error: {e}")
             return None
-        
-        # Convert to lowercase for case-insensitive matching
-        text = text.lower()
-        
-        # Count how many keywords are in the text
-        matches = sum(1 for keyword in keywords if keyword.lower() in text)
-        
-        # Calculate confidence based on percentage of matched keywords
-        if matches > 0:
-            return min(1.0, matches / len(keywords))
-        
-        return 0

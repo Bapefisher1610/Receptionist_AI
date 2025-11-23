@@ -4,12 +4,18 @@ import uuid
 import speech_recognition as sr
 import time
 from pathlib import Path
+import sys
 
-from ..src.core.config import FACES_DIR, VOICES_DIR
-from ..src.modules.face_recognition.face_recognition_module import FaceRecognitionModule
-from ..src.modules.voice_recognition.voice_recognition_module import VoiceRecognitionModule
-from ..src.utils.logger import Logger
-from ..src.utils.utils import resize_image, draw_text_with_background
+# Allow running as standalone script from tools/ by adding project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from src.core.config import FACES_DIR, VOICES_DIR
+from src.modules.face_recognition.face_recognition_module import FaceRecognitionModule
+from src.modules.voice_recognition.voice_recognition_module import VoiceRecognitionModule
+from src.utils.logger import Logger
+from src.utils.utils import resize_image, draw_text_with_background
 
 def main():
     """Main function to add a new user"""
@@ -62,21 +68,54 @@ def capture_face_images(user_id, name, face_module):
     image_count = 0
     max_images = 5
     
+    # Tạo cửa sổ và đặt ở vị trí cụ thể
+    window_name = f"ĐĂNG KÝ: {name} - Chụp ảnh khuôn mặt"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 800, 600)
+    
+    print(f"\n📸 Bắt đầu chụp ảnh! (0/{max_images})")
+    print("💡 Cửa sổ camera đã mở - Hãy nhìn vào camera!")
+    
     while image_count < max_images:
         ret, frame = cap.read()
         if not ret:
-            print("Không thể đọc khung hình từ camera!")
+            print("❌ Không thể đọc khung hình từ camera!")
             break
         
         # Resize frame for display
         display_frame = resize_image(frame, width=800)
         
-        # Draw instructions
-        text = f"Ảnh {image_count+1}/{max_images} - Nhấn SPACE để chụp, ESC để hủy"
-        draw_text_with_background(display_frame, text, (10, 30))
+        # Draw instructions với nhiều thông tin hơn
+        instructions = [
+            f"Người dùng: {name}",
+            f"Ảnh: {image_count}/{max_images}",
+            "",
+            "SPACE = Chụp | ESC = Hủy"
+        ]
+        
+        y_offset = 30
+        for i, text in enumerate(instructions):
+            if text:  # Bỏ qua dòng trống
+                draw_text_with_background(display_frame, text, (10, y_offset + i*35))
+        
+        # Vẽ khung hướng dẫn vị trí khuôn mặt
+        height, width = display_frame.shape[:2]
+        center_x, center_y = width // 2, height // 2
+        face_box_size = 300
+        
+        # Vẽ khung oval hướng dẫn
+        cv2.ellipse(display_frame, (center_x, center_y), 
+                   (face_box_size//2, int(face_box_size*0.7)), 
+                   0, 0, 360, (0, 255, 0), 3)
         
         # Show frame
-        cv2.imshow("Chụp ảnh khuôn mặt", display_frame)
+        cv2.imshow(window_name, display_frame)
+        
+        # Force window to front (Windows specific)
+        try:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+        except:
+            pass
         
         # Wait for key press
         key = cv2.waitKey(1)
@@ -86,27 +125,42 @@ def capture_face_images(user_id, name, face_module):
             break
         
         if key == 32:  # SPACE key
+            print(f"\n📸 Đang chụp ảnh {image_count+1}/{max_images}...")
+            
             # Save image
             timestamp = int(time.time())
             image_path = user_dir / f"{timestamp}.jpg"
             cv2.imwrite(str(image_path), frame)
             
-            # Convert BGR to RGB for face recognition
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Add face to recognition module
-            if face_module.add_face(rgb_frame, user_id, name):
-                print(f"Đã chụp ảnh {image_count+1}/{max_images}")
+            # Add face to recognition module (module sẽ tự chuyển BGR->RGB)
+            if face_module.add_face(frame, user_id, name):
                 image_count += 1
+                print(f"✅ Đã chụp ảnh {image_count}/{max_images}")
+                
+                if image_count < max_images:
+                    print(f"👉 Còn {max_images - image_count} ảnh nữa. Hãy thay đổi góc độ một chút.")
+                else:
+                    print("🎉 Đã chụp đủ ảnh!")
             else:
-                print("Không tìm thấy khuôn mặt trong ảnh. Vui lòng thử lại.")
+                print("❌ Không tìm thấy khuôn mặt trong ảnh!")
+                print("💡 Vui lòng:")
+                print("   - Đảm bảo khuôn mặt nhìn thẳng vào camera")
+                print("   - Có đủ ánh sáng")
+                print("   - Không bị che khuất")
             
             # Small delay to prevent multiple captures
-            time.sleep(1)
+            time.sleep(0.8)
     
     # Release camera and close windows
+    print("\n🔄 Đang đóng camera...")
     cap.release()
     cv2.destroyAllWindows()
+    time.sleep(0.5)
+    
+    if image_count == max_images:
+        print(f"✅ Hoàn tất chụp ảnh cho {name}!")
+    else:
+        print(f"⚠️ Chỉ chụp được {image_count}/{max_images} ảnh")
 
 def record_voice_samples(user_id, name, voice_module):
     """Record voice samples for a new user"""
