@@ -30,7 +30,6 @@ class InlineRegistration:
         
         # Cooldown timers
         self._last_capture_time = 0
-        self._last_voice_time = 0
         
     def start(self):
         """Bắt đầu quy trình đăng ký"""
@@ -48,13 +47,10 @@ class InlineRegistration:
             
             # Khởi tạo state
             self.state = {
-                'step': 'get_name',  # get_name -> capture_face -> capture_voice -> complete
+                'step': 'get_name',  # get_name -> capture_face -> completed
                 'name': '',
                 'face_count': 0,
-                'voice_count': 0,
-                'max_faces': 5,
-                'max_voices': 3,
-                'voice_keywords': []
+                'max_faces': 5
             }
             
             # Hiển thị UI (không dấu cho font)
@@ -84,18 +80,26 @@ class InlineRegistration:
             return False
         
         # Kiểm tra nếu có người quen xuất hiện -> Hủy đăng ký
+        # NHƯNG KHÔNG HỦY nếu đó là người đang đăng ký (cùng tên)
         known_faces = [f for f in detected_faces if f.get('person_id', 'unknown') != 'unknown' and f.get('confidence', 0) >= 0.60]
         if known_faces:
             best_known = max(known_faces, key=lambda x: x.get('confidence', 0))
-            self.logger.info(f"🔄 Phát hiện người quen {best_known['name']} - Hủy đăng ký")
-            self.ui.add_log_message(f"🔄 Phát hiện {best_known['name']} - Hủy đăng ký")
-            return True  # Signal to cancel
+            
+            # Kiểm tra xem có phải người đang đăng ký không
+            if self.user_name and best_known['name'].lower() == self.user_name.lower():
+                # Đây là người đang đăng ký, không hủy
+                self.logger.info(f"✅ Phát hiện {best_known['name']} - người đang đăng ký, tiếp tục...")
+                pass
+            else:
+                # Đây là người khác, hủy đăng ký
+                self.logger.info(f"🔄 Phát hiện người quen khác {best_known['name']} - Hủy đăng ký")
+                self.ui.add_log_message(f"🔄 Phát hiện {best_known['name']} - Hủy đăng ký")
+                return True  # Signal to cancel
         
         # Xử lý theo step
         if self.state['step'] == 'capture_face':
             self._process_face_capture(frame)
-        elif self.state['step'] == 'capture_voice':
-            self._process_voice_capture()
+        # Bỏ bước capture_voice
         
         return False
     
@@ -142,7 +146,7 @@ class InlineRegistration:
     def _process_face_capture(self, frame):
         """Xử lý chụp ảnh khuôn mặt"""
         current_time = time.time()
-        if current_time - self._last_capture_time < 1.5:  # Cooldown 1.5s
+        if current_time - self._last_capture_time < 1.2:  # Cooldown 1.2s (nhanh hơn)
             return
         
         # Phát hiện khuôn mặt
@@ -152,7 +156,11 @@ class InlineRegistration:
             # Lưu ảnh
             timestamp = int(time.time())
             image_path = self.user_dir / f"{timestamp}.jpg"
-            cv2.imwrite(str(image_path), frame)
+            success = cv2.imwrite(str(image_path), frame)
+            
+            if not success:
+                self.logger.error(f"Loi luu anh: {image_path}")
+                return
             
             # Thêm face vào module
             if self.face_module.add_face(frame, self.user_id, self.user_name):
@@ -170,89 +178,33 @@ class InlineRegistration:
                     "Thay doi goc do..." if self.state['face_count'] < self.state['max_faces'] else "Hoan tat!"
                 )
                 
-                # Kiểm tra đã đủ ảnh chưa
+                # Kiểm tra đã đủ ảnh chưa - HOÀN TẤT NGAY
                 if self.state['face_count'] >= self.state['max_faces']:
-                    self.state['step'] = 'capture_voice'
-                    log_msg = "Hoan tat chup anh! Chuyen sang ghi am"
+                    log_msg = "Hoan tat chup anh! Dang ky thanh cong"
                     self.logger.info(log_msg)
                     self.ui.add_log_message(log_msg)
                     
-                    # CẬP NHẬT UI SANG BƯỚC GHI ÂM
+                    # CẬP NHẬT UI HOÀN TẤT
                     self.ui.update_registration_status(
-                        f"GHI AM GIONG NOI (0/3)",
+                        "HOAN TAT!",
                         self.user_name,
-                        f"Hay noi: 'Xin chao, toi la {self.user_name}'"
+                        f"Dang ky thanh cong! ({self.state['face_count']} anh)"
                     )
                     
                     # Thông báo bằng giọng nói có dấu
                     from ..modules.tts.streaming_tts_module import StreamingTTSModule
                     tts = StreamingTTSModule()
-                    tts.speak_immediate(f"Tuyệt vời! Bây giờ hãy nói: Xin chào, tôi là {self.user_name}")
+                    tts.speak_immediate(f"Hoàn tất! Đăng ký thành công cho {self.user_name}!")
+                    
+                    # Đánh dấu hoàn tất
+                    self.state['step'] = 'completed'
     
-    def _process_voice_capture(self):
-        """Xử lý ghi âm giọng nói"""
-        current_time = time.time()
-        if current_time - self._last_voice_time < 2.0:  # Cooldown 2s
-            return
-        
-        try:
-            # Lắng nghe giọng nói
-            audio_text = self.voice_module.listen_for_command(timeout=2, phrase_time_limit=4)
-            
-            if audio_text and len(audio_text.strip()) > 0:
-                self._last_voice_time = current_time
-                
-                # Trích xuất keywords
-                words = audio_text.split()
-                keywords = [word for word in words if len(word) > 3]
-                self.state['voice_keywords'].extend(keywords)
-                
-                self.state['voice_count'] += 1
-                
-                log_msg = f"Da ghi am {self.state['voice_count']}/{self.state['max_voices']}: {audio_text}"
-                self.logger.info(log_msg)
-                self.ui.add_log_message(log_msg)
-                
-                # Kiểm tra đã đủ chưa
-                if self.state['voice_count'] >= self.state['max_voices']:
-                    return True  # Signal to complete
-                else:
-                    # Phrases cho UI (không dấu)
-                    phrases_ui = [
-                        f"Xin chao, toi la {self.user_name}",
-                        "Toi muon dang ky mot cuoc hen",
-                        "Cam on ban rat nhieu"
-                    ]
-                    # Phrases cho TTS (có dấu)
-                    phrases_tts = [
-                        f"Xin chào, tôi là {self.user_name}",
-                        "Tôi muốn đăng ký một cuộc hẹn",
-                        "Cảm ơn bạn rất nhiều"
-                    ]
-                    
-                    next_phrase_ui = phrases_ui[self.state['voice_count']] if self.state['voice_count'] < len(phrases_ui) else "Noi bat ky"
-                    next_phrase_tts = phrases_tts[self.state['voice_count']] if self.state['voice_count'] < len(phrases_tts) else "Nói bất kỳ câu nào"
-                    
-                    # CẬP NHẬT UI
-                    self.ui.update_registration_status(
-                        f"GHI AM ({self.state['voice_count']}/{self.state['max_voices']})",
-                        self.user_name,
-                        f"Hay noi: {next_phrase_ui}"
-                    )
-                    
-                    # Thông báo bằng giọng nói có dấu
-                    from ..modules.tts.streaming_tts_module import StreamingTTSModule
-                    tts = StreamingTTSModule()
-                    tts.speak_immediate(f"Tốt! Bây giờ hãy nói: {next_phrase_tts}")
-        except:
-            pass
-        
-        return False
+
     
     def complete(self):
         """Hoàn tất đăng ký"""
         try:
-            log_msg = "Dang luu thong tin..."
+            log_msg = f"Dang luu thong tin cho {self.user_name}..."
             self.logger.info(log_msg)
             self.ui.add_log_message(log_msg)
             
@@ -268,19 +220,24 @@ class InlineRegistration:
             tts = StreamingTTSModule()
             tts.speak_immediate("Đang lưu thông tin của bạn...")
             
+            # Kiểm tra có đủ ảnh không
+            if self.state['face_count'] < 5:
+                error_msg = f"Loi: Chi co {self.state['face_count']} anh, can du 5"
+                self.logger.error(error_msg)
+                self.ui.add_log_message(error_msg)
+                return False
+            
             # Lưu metadata
             metadata_path = self.user_dir / "metadata.txt"
             metadata_path.write_text(self.user_name, encoding='utf-8')
+            self.logger.info(f"Da luu metadata: {metadata_path}")
             
-            # Lưu voice patterns
-            if self.state['voice_keywords']:
-                unique_keywords = list(set(self.state['voice_keywords']))
-                if self.voice_module.add_voice_pattern(self.user_id, self.user_name, unique_keywords):
-                    log_msg = f"Da luu {len(unique_keywords)} tu khoa"
-                    self.logger.info(log_msg)
-                    self.ui.add_log_message(log_msg)
+            # Bỏ bước lưu voice patterns
+            log_msg = "Bo qua ghi am giong noi"
+            self.logger.info(log_msg)
+            self.ui.add_log_message(log_msg)
             
-            log_msg = f"Dang ky thanh cong: {self.user_name} (ID: {self.user_id})"
+            log_msg = f"Dang ky thanh cong: {self.user_name} (ID: {self.user_id}, {self.state['face_count']} anh)"
             self.logger.info(log_msg)
             self.ui.add_log_message(log_msg)
             
@@ -288,13 +245,16 @@ class InlineRegistration:
             self.ui.update_registration_status(
                 "HOAN TAT!",
                 self.user_name,
-                "Dang ky thanh cong!"
+                f"Dang ky thanh cong! ({self.state['face_count']} anh)"
             )
             
             # Thông báo bằng giọng nói (có dấu)
             from ..modules.tts.streaming_tts_module import StreamingTTSModule
             tts = StreamingTTSModule()
             tts.speak_immediate(f"Hoàn tất! Đăng ký thành công cho {self.user_name}!")
+            
+            # QUAN TRỌNG: Đánh dấu hoàn tất nhưng chưa reset để main loop xử lý
+            self.state['step'] = 'completed'
             
             return True
             
@@ -324,7 +284,6 @@ class InlineRegistration:
             self.user_name = None
             self.user_dir = None
             self._last_capture_time = 0
-            self._last_voice_time = 0
             
             self.ui.hide_registration_ui()
             
@@ -343,7 +302,6 @@ class InlineRegistration:
         self.user_name = None
         self.user_dir = None
         self._last_capture_time = 0
-        self._last_voice_time = 0
         self.ui.hide_registration_ui()
     
     def _extract_name(self, text):

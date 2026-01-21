@@ -451,12 +451,17 @@ class StreamingAIReceptionist:
                             self.greeted_people.add(known_face['person_id'])
                             self.metrics['greetings']['known'] += 1
                     
-                    # Kiểm tra nếu hoàn tất voice capture
-                    if self.registration.state and self.registration.state['step'] == 'capture_voice':
-                        if self.registration.state['voice_count'] >= self.registration.state['max_voices']:
+                    # Kiểm tra nếu hoàn tất
+                    if self.registration.state:
+                        # Hoàn tất nếu đã chụp đủ ảnh (bỏ qua ghi âm nếu cần)
+                        if self.registration.state['step'] == 'capture_face' and self.registration.state['face_count'] >= self.registration.state['max_faces']:
+                            # Chuyển sang ghi âm
+                            pass  # Đã xử lý trong _process_face_capture
+                        
+                        # Xử lý trạng thái completed (sau khi chụp đủ 5 ảnh)
+                        elif self.registration.state['step'] == 'completed':
                             if self.registration.complete():
-                                # Thông báo đã được xử lý trong complete()
-                                time.sleep(3)
+                                time.sleep(2)
                                 # Reload và reset
                                 self.reload_face_encodings()
                                 self.registration.reset()
@@ -498,6 +503,27 @@ class StreamingAIReceptionist:
                     msg = "Đã xóa cache nhận diện"
                     self.system_logger.info(msg)
                     self.ai_chatbot.tts.speak_immediate(msg)
+                elif key == ord('f'):  # 'f' để hoàn tất đăng ký sớm (finish)
+                    if self.registration.is_active and self.registration.state:
+                        if self.registration.state['face_count'] >= 3:
+                            log_msg = "Nguoi dung hoan tat dang ky som (phim F)"
+                            self.system_logger.info(log_msg)
+                            self.ui.add_log_message(log_msg)
+                            if self.registration.complete():
+                                time.sleep(2)
+                                self.reload_face_encodings()
+                                self.registration.reset()
+                                self.current_face_encoding = None
+                                self.current_person_id = None
+                                self.greeted_people.clear()
+                                self.registration.reset()
+                                self.current_face_encoding = None
+                                self.current_person_id = None
+                                self.greeted_people.clear()
+                        else:
+                            msg = f"Can it nhat 3 anh de hoan tat (hien co {self.registration.state['face_count']})"
+                            self.system_logger.info(msg)
+                            self.ui.add_log_message(msg)
         
         except KeyboardInterrupt:
             self.system_logger.info("⚠️ Nhận tín hiệu dừng từ người dùng")

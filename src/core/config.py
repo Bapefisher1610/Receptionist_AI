@@ -24,12 +24,12 @@ LOG_INTERVAL = int(os.getenv('LOG_INTERVAL', 30))  # Minimum seconds between log
 LANGUAGE = os.getenv('LANGUAGE', 'vi')  # Default language
 
 # Face recognition settings
-FACE_RECOGNITION_TOLERANCE = float(os.getenv('FACE_RECOGNITION_TOLERANCE', 0.50))  # 0.50 = cân bằng (0.6 = default, quá lỏng)
+FACE_RECOGNITION_TOLERANCE = float(os.getenv('FACE_RECOGNITION_TOLERANCE', 0.55))  # 0.55 = lỏng hơn để dễ nhận diện
 FACE_RECOGNITION_MODEL = os.getenv('FACE_RECOGNITION_MODEL', 'hog')  # set 'cnn' via env for higher accuracy
 FACE_MATCH_MARGIN = float(os.getenv('FACE_MATCH_MARGIN', 0.06))
 STRICT_FOLDER_EXISTENCE = os.getenv('STRICT_FOLDER_EXISTENCE', 'true').lower() == 'true'
 MIN_FACE_DISTANCE = float(os.getenv('MIN_FACE_DISTANCE', 100))  # Khoảng cách tối thiểu giữa 2 khuôn mặt (pixels)
-MIN_CONFIDENCE_THRESHOLD = float(os.getenv('MIN_CONFIDENCE_THRESHOLD', 0.55))  # 0.55 = cân bằng
+MIN_CONFIDENCE_THRESHOLD = float(os.getenv('MIN_CONFIDENCE_THRESHOLD', 0.50))  # 0.50 = lỏng hơn để dễ nhận diện
 MIN_FACE_SIZE = int(os.getenv('MIN_FACE_SIZE', 80))  # Kích thước tối thiểu của khuôn mặt (pixels)
 FACE_DETECTION_UPSAMPLE = int(os.getenv('FACE_DETECTION_UPSAMPLE', 1))  # Số lần upsample khi detect (1=nhanh, 2=chính xác hơn)
 ENABLE_PREPROCESSING = os.getenv('ENABLE_PREPROCESSING', 'false').lower() == 'true'  # Tắt preprocessing mặc định
